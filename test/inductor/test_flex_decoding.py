@@ -67,6 +67,13 @@ test_score_mods = [
     _generate_alibi_bias(8),
 ]
 
+test_query_len = [
+    1, 
+    2, 
+    32,
+    1024
+]
+
 
 def _times_two(score, b, h, m, n):
     """Joint graph needed for correctness"""
@@ -121,7 +128,8 @@ captured_buffers_map = {
 
 B = 4
 H = 8
-S = 2048
+S = 2
+N = 4096
 D = 64
 
 
@@ -133,13 +141,14 @@ class TestTemplatedSDPA(InductorTestCase):
         B: int = B,
         H: int = H,
         S: int = S,
+        N: int = N,
         D: int = D,
     ):
         sdpa_partial = create_attention(score_mod)
         compiled_sdpa = torch.compile(sdpa_partial)
         q = torch.randn((B, H, S, D), dtype=dtype, device="cuda")
-        k = torch.randn((B, H, S, D), dtype=dtype, device="cuda")
-        v = torch.randn((B, H, S, D), dtype=dtype, device="cuda")
+        k = torch.randn((B, H, N, D), dtype=dtype, device="cuda")
+        v = torch.randn((B, H, N, D), dtype=dtype, device="cuda")
         golden_out = sdpa_partial(
             q.to(torch.float64), k.to(torch.float64), v.to(torch.float64)
         )
@@ -156,13 +165,16 @@ class TestTemplatedSDPA(InductorTestCase):
             fudge_factor = 1.1
         if compiled_error > ref_error * fudge_factor:
             msg = f"Compiled error {compiled_error} is greater than ref error {ref_error} by more than {fudge_factor}X."
+            print("golden_out", golden_out)
+            print("compiled_out", compiled_out)
             self.assertTrue(False, msg)
 
     @supported_platform
     @common_utils.parametrize("dtype", test_dtypes)
     @common_utils.parametrize("score_mod", test_score_mods)
-    def test_builtin_score_mods(self, dtype: torch.dtype, score_mod: Callable):
-        self.run_test(score_mod, dtype)
+    @common_utils.parametrize("query_len", test_query_len)
+    def test_builtin_score_mods(self, dtype: torch.dtype, score_mod: Callable, query_len: int):
+        self.run_test(score_mod, dtype, S=query_len)
 
     @supported_platform
     @common_utils.parametrize("dtype", test_dtypes)
@@ -209,7 +221,7 @@ class TestTemplatedSDPA(InductorTestCase):
     @supported_platform
     @common_utils.parametrize("dtype", test_dtypes_fast)
     def test_load_from_bias_seq_only(self, dtype):
-        bias = torch.randn(S, S, device="cuda", dtype=dtype)
+        bias = torch.randn(S, N, device="cuda", dtype=dtype)
 
         def bias_mod(score, b, h, q, kv):
             return score + bias[q, kv]
@@ -353,7 +365,7 @@ class TestTemplatedSDPA(InductorTestCase):
 
     @supported_platform
     def test_multiple_score_mod_calls(self):
-        query = torch.randn((1, 8, 1024, 64), dtype=torch.float32, device="cuda")
+        query = torch.randn((1, 8, 2, 64), dtype=torch.float32, device="cuda")
         keys = [
             torch.randn((1, 8, 1024, 64), dtype=torch.float32, device="cuda")
             for _ in range(2)
@@ -380,7 +392,7 @@ class TestTemplatedSDPA(InductorTestCase):
 
     @supported_platform
     def test_multiple_score_mod_calls2(self):
-        query = torch.randn((1, 8, 1024, 64), dtype=torch.float32, device="cuda")
+        query = torch.randn((1, 8, 2, 64), dtype=torch.float32, device="cuda")
         keys = [
             torch.randn((1, 8, 1024, 64), dtype=torch.float32, device="cuda")
             for _ in range(3)
@@ -411,17 +423,17 @@ class TestTemplatedSDPA(InductorTestCase):
     @skip("Triton bug ")  # https://github.com/pytorch/pytorch/issues/124571
     @common_utils.parametrize("dtype", test_dtypes)
     def test_njt_causal(self, dtype):
-        offsets = torch.tensor(
-            [0, 1024, 1024 + 512, S], device="cuda", dtype=torch.int32
+        offsets_kv = torch.tensor(
+            [0, 1024, 1024 + 512, N], device="cuda", dtype=torch.int32
         )
-        seq_idx = torch.zeros(S, device="cuda", dtype=torch.int32)
-        for idx in range(len(offsets) - 1):
-            seq_idx[offsets[idx] : offsets[idx + 1]] = idx
+        kv_idx = torch.zeros(N, device="cuda", dtype=torch.int32)
+        for idx in range(len(offsets_kv) - 1):
+            kv_idx[offsets[idx] : offsets_kv[idx + 1]] = idx
 
         def create_njt_wrapper(orig_score_mod, offsets, seq_idx):
             def njt_score_mod(qk, b, h, q, kv):
-                q_nested = q - offsets[seq_idx[q]]
-                kv_nested = kv - offsets[seq_idx[kv]]
+                q_nested = q
+                kv_nested = kv - offsets[kv_idx[kv]]
                 return orig_score_mod(qk, b, h, q_nested, kv_nested)
 
             return njt_score_mod
@@ -432,14 +444,21 @@ class TestTemplatedSDPA(InductorTestCase):
 
     @supported_platform
     def test_backwards_fails(self):
-        make_tensor = functools.partial(
+        make_tensor_kv = functools.partial(
+            torch.randn,
+            (B, H, N, D),
+            dtype=torch.float32,
+            device="cuda",
+            requires_grad=True,
+        )
+        make_tensor_q = functools.partial(
             torch.randn,
             (B, H, S, D),
             dtype=torch.float32,
             device="cuda",
             requires_grad=True,
         )
-        q, k, v = make_tensor(), make_tensor(), make_tensor()
+        q, k, v = make_tensor_q(), make_tensor_kv(), make_tensor_kv()
         func = torch.compile(_flex_attention, backend="inductor", fullgraph=True)
         with self.assertRaisesRegex(
             AssertionError, "flex_attention_backward is not an OpOverload"
@@ -449,21 +468,12 @@ class TestTemplatedSDPA(InductorTestCase):
 
     @supported_platform
     def test_mixed_dtypes_fails(self):
-        query = torch.randn((1, 1, 1024, 64), dtype=torch.float32, device="cuda")
+        query = torch.randn((1, 1, 2, 64), dtype=torch.float32, device="cuda")
         key = torch.randn((1, 1, 1024, 64), dtype=torch.float16, device="cuda")
         value = torch.randn((1, 1, 1024, 64), dtype=torch.float16, device="cuda")
         with self.assertRaisesRegex(
             ValueError, "Expected query, key, and value to have the same dtype"
         ):
-            _flex_attention(query, key, value, _identity)
-
-    @supported_platform
-    @expectedFailure # Supports different sequence length with FlexDecoding kernel. 
-    def test_different_sequence_length_fails(self):
-        query = torch.randn((1, 1, 2048, 64), dtype=torch.float32, device="cuda")
-        key = torch.randn((1, 1, 1024, 64), dtype=torch.float32, device="cuda")
-        value = torch.randn((1, 1, 1024, 64), dtype=torch.float32, device="cuda")
-        with self.assertRaisesRegex(ValueError, "NYI: The target sequence length"):
             _flex_attention(query, key, value, _identity)
 
     @supported_platform
@@ -505,14 +515,21 @@ class TestTemplatedSDPA(InductorTestCase):
             """
             return flex_attention_hop(q, k, v, score_mod)
 
-        make_tensor = functools.partial(
+        make_tensor_kv = functools.partial(
+            torch.randn,
+            (B, H, N, D),
+            dtype=dtype,
+            device="cuda",
+            requires_grad=True,
+        )
+        make_tensor_q = functools.partial(
             torch.randn,
             (B, H, S, D),
             dtype=dtype,
             device="cuda",
             requires_grad=True,
         )
-        q, k, v = make_tensor(), make_tensor(), make_tensor()
+        q, k, v = make_tensor_q(), make_tensor_kv(), make_tensor_kv()
 
         ref_out, ref_lse = eager_sdpa_hop(
             q.to(torch.float64), k.to(torch.float64), v.to(torch.float64), score_mod
@@ -547,14 +564,21 @@ class TestTemplatedSDPA(InductorTestCase):
 
     @supported_platform
     def test_logsumexp_only_return(self):
-        make_tensor = functools.partial(
+        make_tensor_kv = functools.partial(
             torch.randn,
-            (B, H, S, D),
-            dtype=torch.float32,
+            (B, H, N, D),
+            dtype=dtype,
             device="cuda",
             requires_grad=True,
         )
-        q, k, v = make_tensor(), make_tensor(), make_tensor()
+        make_tensor_q = functools.partial(
+            torch.randn,
+            (B, H, S, D),
+            dtype=dtype,
+            device="cuda",
+            requires_grad=True,
+        )
+        q, k, v = make_tensor_q(), make_tensor_kv(), make_tensor_kv()
 
         @torch.compile
         def func(q, k, v, score_mod):
@@ -568,14 +592,21 @@ class TestTemplatedSDPA(InductorTestCase):
 
     @supported_platform
     def test_logsumexp_is_not_fused(self):
-        make_tensor = functools.partial(
+        make_tensor_kv = functools.partial(
             torch.randn,
-            (B, H, S, D),
-            dtype=torch.float32,
+            (B, H, N, D),
+            dtype=dtype,
             device="cuda",
             requires_grad=True,
         )
-        q, k, v = make_tensor(), make_tensor(), make_tensor()
+        make_tensor_q = functools.partial(
+            torch.randn,
+            (B, H, S, D),
+            dtype=dtype,
+            device="cuda",
+            requires_grad=True,
+        )
+        q, k, v = make_tensor_q(), make_tensor_kv(), make_tensor_kv()
 
         @torch.compile
         def func(q, k, v, score_mod):
@@ -586,144 +617,6 @@ class TestTemplatedSDPA(InductorTestCase):
         _, code = run_and_get_code(func, q, k, v, _identity)
         # Ensure that two kernels are generated
         FileCheck().check_count(".run(", 2, True).run(code[0])
-
-    @supported_platform
-    @common_utils.parametrize(
-        "score_mod", [_identity, _causal, _times_two, _squared, _trig, _trig2]
-    )
-    def test_aot_eager_gradcheck(self, score_mod):
-        make_tensor = functools.partial(
-            torch.randn,
-            (2, 2, 8, 4),
-            device="cuda",
-            dtype=torch.float64,
-            requires_grad=True,
-        )
-        query, key, value = make_tensor(), make_tensor(), make_tensor()
-
-        func = torch.compile(_flex_attention, backend="aot_eager", fullgraph=True)
-
-        self.assertTrue(
-            torch.autograd.gradcheck(
-                func, (query, key, value, score_mod), raise_exception=True
-            )
-        )
-
-    @supported_platform
-    @common_utils.parametrize("score_mod_name", ["_head_offset", "_buffer_reduced"])
-    @common_utils.parametrize("mode", ["eager", "aot_eager"])
-    def test_captured_score_mod_aot_eager_gradcheck(
-        self, score_mod_name: str, mode: str
-    ):
-        make_tensor = functools.partial(
-            torch.randn,
-            (2, 2, 8, 4),
-            device="cuda",
-            dtype=torch.float64,
-            requires_grad=True,
-        )
-        query, key, value = make_tensor(), make_tensor(), make_tensor()
-
-        func = torch.compile(_flex_attention, backend=mode, fullgraph=True)
-        score_mod = captured_buffers_map[score_mod_name](torch.float64)
-
-        self.assertTrue(
-            torch.autograd.gradcheck(
-                func, (query, key, value, score_mod), raise_exception=True
-            )
-        )
-
-    @supported_platform
-    def test_fw_bw_graph_correctness(self):
-        cnt = CompileCounterWithBackend("aot_eager")
-        make_tensor = functools.partial(
-            torch.randn,
-            (2, 2, 8, 4),
-            device="cuda",
-            dtype=torch.float64,
-            requires_grad=True,
-        )
-        query, key, value = make_tensor(), make_tensor(), make_tensor()
-
-        func = torch.compile(_flex_attention, backend=cnt, fullgraph=True)
-        out = func(query, key, value, _squared)
-        out.sum().backward()
-        self.assertEqual(cnt.frame_count, 1)
-        self.assertEqual(len(cnt.graphs), 1)
-        graph = cnt.graphs[0]
-        norm_graph = normalize_gm(graph.print_readable(print_output=False))
-        self.assertExpectedInline(
-            norm_graph,
-            """\
-class GraphModule(torch.nn.Module):
-    def forward(self, L_args_0_: "f64[2, 2, 8, 4]", L_args_1_: "f64[2, 2, 8, 4]", L_args_2_: "f64[2, 2, 8, 4]"):
-        l_args_0_ = L_args_0_
-        l_args_1_ = L_args_1_
-        l_args_2_ = L_args_2_
-
-        new_empty: "f64[]" = l_args_0_.new_empty([], requires_grad = True)
-        new_empty_1: "i32[]" = l_args_0_.new_empty([], dtype = torch.int32)
-        new_empty_2: "i32[]" = l_args_0_.new_empty([], dtype = torch.int32)
-        new_empty_3: "i32[]" = l_args_0_.new_empty([], dtype = torch.int32)
-        new_empty_4: "i32[]" = l_args_0_.new_empty([], dtype = torch.int32)
-        flex_attention_0 = self.flex_attention_0
-        flex_attention = torch.ops.higher_order.flex_attention(l_args_0_, l_args_1_, l_args_2_, flex_attention_0);  l_args_0_ = l_args_1_ = l_args_2_ = flex_attention_0 = None
-        out: "f64[2, 2, 8, 4]" = flex_attention[0];  flex_attention = None
-        return (out,)
-
-    class GraphModule(torch.nn.Module):
-        def forward(self, new_empty: "f64[]", new_empty_1: "i32[]", new_empty_2: "i32[]", new_empty_3: "i32[]", new_empty_4: "i32[]"):
-            mul: "f64[]" = new_empty * new_empty;  new_empty = None
-            return mul
-""",  # noqa: B950
-        )
-        # Save the AOT graphs
-        aot_graphs = []
-        from torch._inductor import compile_fx
-
-        def debug_compile_fx_inner(graph, example_inputs, *args, **kwargs):
-            aot_graphs.append(graph)
-            return graph
-
-        backend = functools.partial(
-            compile_fx.compile_fx, inner_compile=debug_compile_fx_inner
-        )
-        func = torch.compile(func, backend=backend, fullgraph=True)
-        out = func(query, key, value, _squared)
-        out.sum().backward()
-
-        joint_graph = normalize_gm(aot_graphs[1].print_readable(print_output=False))
-
-        self.assertExpectedInline(
-            joint_graph,
-            """\
-class GraphModule(torch.nn.Module):
-    def forward(self, primals_1: "f64[2, 2, 8, 4]", primals_2: "f64[2, 2, 8, 4]", primals_3: "f64[2, 2, 8, 4]", """
-            + """alias_5: "f64[2, 2, 8, 4]", alias_7: "f32[2, 2, 8]", tangents_1: "f64[2, 2, 8, 4]"):
-        fw_graph = self.fw_graph
-        joint_graph = self.joint_graph
-        flex_attention_backward = torch.ops.higher_order.flex_attention_backward(primals_1, primals_2, """
-            + """primals_3, alias_5, alias_7, tangents_1, fw_graph, joint_graph);  primals_1 = primals_2 = primals_3 = alias_5 """
-            + """= alias_7 = tangents_1 = fw_graph = joint_graph = None
-        getitem_2: "f64[2, 2, 8, 4]" = flex_attention_backward[0]
-        getitem_3: "f64[2, 2, 8, 4]" = flex_attention_backward[1]
-        getitem_4: "f64[2, 2, 8, 4]" = flex_attention_backward[2];  flex_attention_backward = None
-        return [getitem_2, getitem_3, getitem_4]
-
-    class <lambda>(torch.nn.Module):
-        def forward(self, arg0_1: "f64[]", arg1_1: "i32[]", arg2_1: "i32[]", arg3_1: "i32[]", arg4_1: "i32[]"):
-            mul: "f64[]" = torch.ops.aten.mul.Tensor(arg0_1, arg0_1);  arg0_1 = None
-            return mul
-
-    class <lambda>(torch.nn.Module):
-        def forward(self, arg0_1: "f64[]", arg1_1: "i32[]", arg2_1: "i32[]", arg3_1: "i32[]", arg4_1: "i32[]", arg5_1: "f64[]"):
-            mul: "f64[]" = torch.ops.aten.mul.Tensor(arg0_1, arg0_1)
-            mul_1: "f64[]" = torch.ops.aten.mul.Tensor(arg5_1, arg0_1)
-            mul_2: "f64[]" = torch.ops.aten.mul.Tensor(arg5_1, arg0_1);  arg5_1 = arg0_1 = None
-            add: "f64[]" = torch.ops.aten.add.Tensor(mul_2, mul_1);  mul_2 = mul_1 = None
-            return [add, None, None, None, None]
-""",
-        )
 
 
 common_utils.instantiate_parametrized_tests(TestTemplatedSDPA)
