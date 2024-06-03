@@ -1,4 +1,3 @@
-
 r"""
 The torch package contains data structures for multi-dimensional
 tensors and defines mathematical operations over these tensors.
@@ -480,10 +479,9 @@ def sym_not(a):
         a (SymBool or bool): Object to negate
     """
     import sympy
-    from .overrides import has_torch_function_unary, handle_torch_function
 
-    if has_torch_function_unary(a):
-        return handle_torch_function(sym_not, (a,), a)
+    if overrides.has_torch_function_unary(a):
+        return overrides.handle_torch_function(sym_not, (a,), a)
     if hasattr(a, '__sym_not__'):
         return a.__sym_not__()
     if isinstance(a, sympy.Basic):
@@ -496,10 +494,8 @@ def sym_float(a):
     Args:
         a (SymInt, SymFloat, or object): Object to cast
     """
-    from .overrides import has_torch_function_unary, handle_torch_function
-
-    if has_torch_function_unary(a):
-        return handle_torch_function(sym_float, (a,), a)
+    if overrides.has_torch_function_unary(a):
+        return overrides.handle_torch_function(sym_float, (a,), a)
     if isinstance(a, SymFloat):
         return a
     elif hasattr(a, '__sym_float__'):
@@ -513,10 +509,8 @@ def sym_int(a):
     Args:
         a (SymInt, SymFloat, or object): Object to cast
     """
-    from .overrides import has_torch_function_unary, handle_torch_function
-
-    if has_torch_function_unary(a):
-        return handle_torch_function(sym_int, (a,), a)
+    if overrides.has_torch_function_unary(a):
+        return overrides.handle_torch_function(sym_int, (a,), a)
     if isinstance(a, SymInt):
         return a
     elif isinstance(a, SymFloat):
@@ -525,10 +519,8 @@ def sym_int(a):
 
 def sym_max(a, b):
     """ SymInt-aware utility for max()."""
-    from .overrides import has_torch_function, handle_torch_function
-
-    if has_torch_function((a, b)):
-        return handle_torch_function(sym_max, (a, b), a, b)
+    if overrides.has_torch_function((a, b)):
+        return overrides.handle_torch_function(sym_max, (a, b), a, b)
     if isinstance(a, (SymInt, SymFloat)):
         return a.__sym_max__(b)
     elif isinstance(b, (SymInt, SymFloat)):
@@ -540,10 +532,8 @@ def sym_max(a, b):
 
 def sym_min(a, b):
     """ SymInt-aware utility for max()."""
-    from .overrides import has_torch_function, handle_torch_function
-
-    if has_torch_function((a, b)):
-        return handle_torch_function(sym_min, (a, b), a, b)
+    if overrides.has_torch_function((a, b)):
+        return overrides.handle_torch_function(sym_min, (a, b), a, b)
     if isinstance(a, (SymInt, SymFloat)):
         return a.__sym_min__(b)
     elif isinstance(b, (SymInt, SymFloat)):
@@ -553,10 +543,8 @@ def sym_min(a, b):
 # Drop in replacement for math.sqrt, math.sin, math.cos etc
 def _get_sym_math_fn(name):
     def fn(a):
-        from .overrides import has_torch_function_unary, handle_torch_function
-
-        if has_torch_function_unary(a):
-            return handle_torch_function(fn, (a,), a)
+        if overrides.has_torch_function_unary(a):
+            return overrides.handle_torch_function(fn, (a,), a)
         if hasattr(a, f"__sym_{name}__"):
             return getattr(a, f"__sym_{name}__")()
         return getattr(math, name)(a)
@@ -578,10 +566,8 @@ __all__.append("sym_sqrt")
 
 
 def sym_ite(b, t, f):
-    from .overrides import has_torch_function, handle_torch_function
-
-    if has_torch_function((b, t, f)):
-        return handle_torch_function(sym_ite, (b, t, f), b, t, f)
+    if overrides.has_torch_function((b, t, f)):
+        return overrides.handle_torch_function(sym_ite, (b, t, f), b, t, f)
     assert isinstance(b, (SymBool, builtins.bool)) and type(t) == type(f)
     if isinstance(b, SymBool):
         return b.__sym_ite__(t, f)
@@ -610,6 +596,8 @@ except ImportError:
                 or by running Python from a different directory.
             ''').strip()) from None
     raise  # If __file__ is not None the cause is unknown, so just re-raise.
+
+from torch import _C as _C  # it is safe to import _C at this point
 
 __name, __obj = '', None
 for __name in dir(_C):
@@ -1331,6 +1319,7 @@ __all__.extend(['e', 'pi', 'nan', 'inf', 'newaxis'])
 ################################################################################
 
 from ._tensor import Tensor
+from torch import storage as storage
 from .storage import _StorageBase, TypedStorage, _LegacyStorage, UntypedStorage, _warn_typed_storage_removal
 
 # NOTE: New <type>Storage classes should never be added. When adding a new
@@ -1518,7 +1507,9 @@ _storage_classes = {
 _tensor_classes: Set[Type] = set()
 
 # If you edit these imports, please update torch/__init__.py.in as well
+from torch import random as random
 from .random import set_rng_state, get_rng_state, manual_seed, initial_seed, seed
+from torch import serialization as serialization
 from .serialization import save, load
 from ._tensor_str import set_printoptions
 
@@ -1535,6 +1526,7 @@ def _manager_path():
         raise RuntimeError("Unable to find torch_shm_manager at " + path)
     return path.encode('utf-8')
 
+from torch import amp as amp
 from torch.amp import autocast, GradScaler
 
 # Initializing the extension shadows the built-in python float / int classes;
@@ -1607,6 +1599,7 @@ from ._compile import _disable_dynamo
 ################################################################################
 
 # needs to be after the above ATen bindings so we can overwrite from Python side
+from torch import functional as functional
 from .functional import *  # noqa: F403
 
 
@@ -1625,10 +1618,8 @@ del _LegacyStorage
 def _assert(condition, message):
     r"""A wrapper around Python's assert which is symbolically traceable.
     """
-    from .overrides import has_torch_function, handle_torch_function
-
-    if type(condition) is not torch.Tensor and has_torch_function((condition,)):
-        return handle_torch_function(_assert, (condition,), condition, message)
+    if type(condition) is not torch.Tensor and overrides.has_torch_function((condition,)):
+        return overrides.handle_torch_function(_assert, (condition,), condition, message)
     assert condition, message
 
 ################################################################################
@@ -1657,22 +1648,21 @@ from torch import nested as nested
 from torch import nn as nn
 from torch.signal import windows as windows
 from torch import optim as optim
-import torch.optim._multi_tensor
 from torch import multiprocessing as multiprocessing
 from torch import sparse as sparse
 from torch import special as special
-import torch.utils.backcompat
 from torch import jit as jit
 from torch import linalg as linalg
 from torch import hub as hub
-from torch import random as random
 from torch import distributions as distributions
 from torch import testing as testing
 from torch import backends as backends
-import torch.utils.data
+from torch import utils as utils
 from torch import __config__ as __config__
 from torch import __future__ as __future__
 from torch import profiler as profiler
+from torch import overrides as overrides
+from torch import types as types
 
 # Quantized, sparse, AO, etc. should be last to get imported, as nothing
 # is expected to depend on them.
@@ -1732,7 +1722,7 @@ from torch.utils.dlpack import from_dlpack, to_dlpack
 # Import experimental masked operations support. See
 # [RFC-0016](https://github.com/pytorch/rfcs/pull/27) for more
 # information.
-from . import masked
+from torch import masked as masked
 
 # Import removed ops with error message about removal
 from ._linalg_utils import (  # type: ignore[misc]
