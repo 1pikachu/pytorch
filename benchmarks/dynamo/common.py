@@ -663,7 +663,7 @@ def speedup_experiment(args, model_iter_fn, model, example_inputs, **kwargs):
     # if args.dynamic_shapes:
     #     return speedup_experiment_ds(args, model_iter_fn, model, example_inputs)
 
-    timings = np.zeros((args.repeat, 2), np.float64)
+    timings = np.zeros((args.repeat, 1), np.float64)
     # if we randomize the input, we should also check the result is correct
     should_randomize_input = args.randomize_input
 
@@ -700,104 +700,113 @@ def speedup_experiment(args, model_iter_fn, model, example_inputs, **kwargs):
                 if should_randomize_input
                 else example_inputs
             )
-            # need call mark_step to perform the computation
-            # on randomize_input. Otherwise the first call using the
-            # inputs will incur high penalty then the next one.
-            maybe_mark_step(args)
+            if not args.compile:
+                # need call mark_step to perform the computation
+                # on randomize_input. Otherwise the first call using the
+                # inputs will incur high penalty then the next one.
+                maybe_mark_step(args)
 
-            # interleave the runs to handle frequency scaling and load changes
-            with maybe_mark_profile(p=p, mark="expected"):
-                timings[rep, 0], expected_output = timed(
-                    model,
-                    model_iter_fn,
-                    inputs,
-                    return_result=True,
-                    times=times,
-                    collect_outputs=args.collect_outputs,
-                )
+                # interleave the runs to handle frequency scaling and load changes
+                with maybe_mark_profile(p=p, mark="expected"):
+                    timings[rep, 0], expected_output = timed(
+                        model,
+                        model_iter_fn,
+                        inputs,
+                        return_result=True,
+                        times=times,
+                        collect_outputs=args.collect_outputs,
+                    )
+            else:
+                # call mark_step between the 2 calls to make the comparison fair.
+                maybe_mark_step(args)
 
-            # call mark_step between the 2 calls to make the comparison fair.
-            maybe_mark_step(args)
-
-            with maybe_mark_profile(p=p, mark="actual"):
-                timings[rep, 1], actual_output = timed(
-                    model,
-                    frozen_model_iter_fn,
-                    inputs,
-                    return_result=True,
-                    times=times,
-                    collect_outputs=args.collect_outputs,
-                )
+                with maybe_mark_profile(p=p, mark="actual"):
+                    timings[rep, 0], actual_output = timed(
+                        model,
+                        frozen_model_iter_fn,
+                        inputs,
+                        return_result=True,
+                        times=times,
+                        collect_outputs=args.collect_outputs,
+                    )
 
     if args.export_profiler_trace:
         name = args.profiler_trace_name + "_" + model.name + ".json"
         name = os.path.join(torch._dynamo.config.base_dir, name)
         p.export_chrome_trace(name)
-    median = np.median(timings, axis=0)
-    speedup = median[0] / median[1]
-    if args.dump_raw_metrics:
-        np.save(
-            f"{output_filename[:-4]}-raw_timings-{current_name}-{current_device}.npy",
-            timings,
-        )
 
-    first_headers = ["dev", "name", "batch_size"]
-    first_fields = [current_device, current_name, current_batch_size]
-    if "tag" in kwargs:
-        first_headers.append("tag")
-        first_fields.append(kwargs["tag"])
-    headers = first_headers + ["speedup", "abs_latency"]
-    row = first_fields + [float(speedup), median[1] * 1000]
-    msg = f"{speedup:.3f}x"
-    if args.baseline:
-        headers.extend(
-            [
-                "baseline",
-                "speedup_vs_baseline",
-            ]
-        )
-        df = pd.read_csv(args.baseline)
-        try:
-            baseline_speedup = df[df["name"] == current_name]["speedup"].item()
-            row.extend([baseline_speedup, speedup / baseline_speedup])
-            msg = f"{baseline_speedup:.3f}x -> {speedup:.3f}x [{speedup / baseline_speedup:.3f}x]"
-        except (KeyError, ZeroDivisionError):
-            row.extend(
-                [
-                    0.0,
-                    0.0,
-                ]
-            )
-    if "compilation_latency" in kwargs:
-        headers += [
-            "compilation_latency",
-            "compression_ratio",
-            "eager_peak_mem",
-            "dynamo_peak_mem",
-        ]
-        row.append(kwargs["compilation_latency"])
-        row.append(kwargs["compression_ratio"])
-        row.append(kwargs["eager_peak_mem"])
-        row.append(kwargs["dynamo_peak_mem"])
-    if "dynamo_stats" in kwargs:
-        for k, v in kwargs["dynamo_stats"].items():
-            headers.append(k)
-            row.append(v)
-    output_csv(
-        output_filename,
-        headers,
-        row,
-    )
-    headers, data = torch._dynamo.utils.compile_times(repr="csv", aggregate=True)
-    assert (
-        output_filename.find(".csv") > 0
-    ), f"expected output_filename to be a .csv, but got {output_filename}"
-    output_csv(
-        output_filename[:-4] + "_compilation_metrics.csv",
-        first_headers + headers,
-        first_fields + data,
-    )
-    return msg
+    median_duration = np.median(timings, axis=0)[0] + kwargs["H2D"]
+    latency = median_duration * 1000
+    throughput = current_batch_size * 1000 / latency
+    print("H2D: ", kwargs["H2D"])
+    print("batch size: ", current_batch_size)
+    print("inference Latency: {} ms".format(latency))
+    print("inference Throughput: {} samples/s".format(throughput))
+    #median = np.median(timings, axis=0)
+    #speedup = median[0] / median[1]
+    #if args.dump_raw_metrics:
+    #    np.save(
+    #        f"{output_filename[:-4]}-raw_timings-{current_name}-{current_device}.npy",
+    #        timings,
+    #    )
+
+    #first_headers = ["dev", "name", "batch_size"]
+    #first_fields = [current_device, current_name, current_batch_size]
+    #if "tag" in kwargs:
+    #    first_headers.append("tag")
+    #    first_fields.append(kwargs["tag"])
+    #headers = first_headers + ["speedup", "abs_latency"]
+    #row = first_fields + [float(speedup), median[1] * 1000]
+    #msg = f"{speedup:.3f}x"
+    #if args.baseline:
+    #    headers.extend(
+    #        [
+    #            "baseline",
+    #            "speedup_vs_baseline",
+    #        ]
+    #    )
+    #    df = pd.read_csv(args.baseline)
+    #    try:
+    #        baseline_speedup = df[df["name"] == current_name]["speedup"].item()
+    #        row.extend([baseline_speedup, speedup / baseline_speedup])
+    #        msg = f"{baseline_speedup:.3f}x -> {speedup:.3f}x [{speedup / baseline_speedup:.3f}x]"
+    #    except (KeyError, ZeroDivisionError):
+    #        row.extend(
+    #            [
+    #                0.0,
+    #                0.0,
+    #            ]
+    #        )
+    #if "compilation_latency" in kwargs:
+    #    headers += [
+    #        "compilation_latency",
+    #        "compression_ratio",
+    #        "eager_peak_mem",
+    #        "dynamo_peak_mem",
+    #    ]
+    #    row.append(kwargs["compilation_latency"])
+    #    row.append(kwargs["compression_ratio"])
+    #    row.append(kwargs["eager_peak_mem"])
+    #    row.append(kwargs["dynamo_peak_mem"])
+    #if "dynamo_stats" in kwargs:
+    #    for k, v in kwargs["dynamo_stats"].items():
+    #        headers.append(k)
+    #        row.append(v)
+    #output_csv(
+    #    output_filename,
+    #    headers,
+    #    row,
+    #)
+    #headers, data = torch._dynamo.utils.compile_times(repr="csv", aggregate=True)
+    #assert (
+    #    output_filename.find(".csv") > 0
+    #), f"expected output_filename to be a .csv, but got {output_filename}"
+    #output_csv(
+    #    output_filename[:-4] + "_compilation_metrics.csv",
+    #    first_headers + headers,
+    #    first_fields + data,
+    #)
+    return throughput
 
 
 def speedup_experiment_ds(args, model_iter_fn, model, example_inputs):
@@ -1720,6 +1729,8 @@ class BenchmarkRunner:
             #  harder.
             # self.grad_scaler = torch.cuda.amp.GradScaler(init_scale=2.0)
             self.autocast = torch.cuda.amp.autocast
+        elif self.args.amp and self.args.devices == ["xpu"]:
+            self.autocast = torch.xpu.amp.autocast
         elif (self.args.bfloat16 or self.args.amp) and self.args.devices == ["cpu"]:
             self.autocast = torch.cpu.amp.autocast
 
@@ -2354,6 +2365,7 @@ class BenchmarkRunner:
 
             if not hasattr(model, name):
                 model.name = name
+            experiment_kwargs["H2D"] = self.H2D
             results.append(experiment(model, example_inputs, **experiment_kwargs))
             return " ".join(map(str, results))
 
@@ -2482,6 +2494,7 @@ def should_diff_branch(args):
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser()
+    parser.add_argument("--compile", action="store_true", help="use for OOB")
     parser.add_argument(
         "--filter", "-k", action="append", help="filter benchmarks with regexp"
     )
@@ -3155,9 +3168,12 @@ def run(runner, args, original_dir=None):
             log.warning("torch.cuda.is_available() == False, using CPU")
             args.devices = ["cpu"]
 
-    if args.devices != ["cpu"] and torch.cuda.is_available():
+    if args.devices != ["cpu"]:
         global synchronize
-        synchronize = torch.cuda.synchronize
+        if args.devices == ["cuda"] or torch.cuda.is_available():
+            synchronize = torch.cuda.synchronize
+        else:
+            synchronize = torch.xpu.synchronize
 
     if (
         args.devices == ["cuda"]
@@ -3208,6 +3224,8 @@ def run(runner, args, original_dir=None):
         runner.skip_models.update(runner.very_slow_models)
         runner.skip_models.update(runner.skip_models_for_cpu)
     elif args.devices == ["cuda"]:
+        runner.skip_models.update(runner.skip_models_for_cuda)
+    elif args.devices == ["xpu"]:
         runner.skip_models.update(runner.skip_models_for_cuda)
 
     if args.no_skip:

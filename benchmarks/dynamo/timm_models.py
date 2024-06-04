@@ -6,6 +6,7 @@ import re
 import subprocess
 import sys
 import warnings
+import time
 
 import torch
 from common import BenchmarkRunner, download_retry_decorator, main
@@ -222,6 +223,11 @@ class TimmRunner(BenchmarkRunner):
             memory_format=torch.channels_last if channels_last else None,
         )
 
+        if device == "xpu":
+            import intel_extension_for_pytorch
+            print("---- enable optimize")
+            model = torch.xpu.optimize(model=model, dtype="float16" if self.args.inference else "bfloat16")
+
         self.num_classes = model.num_classes
 
         data_config = resolve_data_config(
@@ -255,7 +261,18 @@ class TimmRunner(BenchmarkRunner):
         ]
         self.target = self._gen_target(batch_size, device)
 
-        self.loss = torch.nn.CrossEntropyLoss().to(device)
+        example_inputs[0] = example_inputs[0].to("cpu")
+        self.target = self.target.to("cpu")
+        self.loss = torch.nn.CrossEntropyLoss().to("cpu")
+
+        self.H2D = time.time()
+        example_inputs[0] = example_inputs[0].to(device)
+        self.H2D = time.time() - self.H2D
+
+        self.target = self.target.to(device)
+        self.loss = self.loss.to(device)
+        if is_training and not use_eval_mode:
+            self.H2D = time.time() - self.H2D
 
         if model_name in SCALED_COMPUTE_LOSS:
             self.compute_loss = self.scaled_compute_loss
