@@ -63,9 +63,12 @@ function generate_core {
             echo "run with jit"
         fi
         if [[ "${OOB_MODE_NAME}" == "realtime" ]];then
-            addtion_options=" --inference --freezing "
+            addtion_options=" --inference --freezing "${addtion_options}
         elif [[ "${OOB_MODE_NAME}" == "train" ]];then
-            addtion_options=" --training "
+            addtion_options=" --training "${addtion_options}
+        fi
+        if [[ "${batch_size}" != "default" ]];then
+            addtion_options=" --batch-size ${batch_size} "${addtion_options}
         fi
         printf " ${OOB_EXEC_HEADER} \
           python benchmarks/dynamo/timm_models.py \
