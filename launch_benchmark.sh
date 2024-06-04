@@ -62,9 +62,9 @@ function generate_core {
         elif [[ "${addtion_options}" =~ "--jit" ]];then
             echo "run with jit"
         fi
-        if [[ "${OOB_MODE_NAME}" == "realtime" ]];then
+        if [[ "${mode_name}" == "realtime" ]];then
             addtion_options=" --inference --freezing "${addtion_options}
-        elif [[ "${OOB_MODE_NAME}" == "train" ]];then
+        elif [[ "${mode_name}" == "train" ]];then
             addtion_options=" --training "${addtion_options}
         fi
         if [[ "${batch_size}" != "default" ]];then
@@ -73,9 +73,8 @@ function generate_core {
         printf " ${OOB_EXEC_HEADER} \
           python benchmarks/dynamo/timm_models.py \
             --performance --amp -d${device} -n${num_iter} \
-            --inference --freezing --timeout=7200 --only ${model_name} \
+            --timeout=7200 --only ${model_name} \
             --backend=inductor \
-            --batch-size ${batch_size} \
             ${addtion_options} \
             > ${log_file} 2>&1 &  \n" |tee -a ${excute_cmd_file}
         if [ "${numa_nodes_use}" == "0" ];then
