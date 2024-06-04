@@ -224,7 +224,6 @@ class TimmRunner(BenchmarkRunner):
         )
 
         if device == "xpu":
-            import intel_extension_for_pytorch
             print("---- enable optimize")
             model = torch.xpu.optimize(model=model, dtype="float16" if self.args.inference else "bfloat16")
 

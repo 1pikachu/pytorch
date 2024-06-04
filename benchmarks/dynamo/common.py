@@ -3004,6 +3004,8 @@ def main(runner, original_dir=None):
     args = parse_args()
     if args.baseline:
         args.baseline = os.path.abspath(args.baseline)
+    if args.devices == ["xpu"]:
+        import intel_extension_for_pytorch
 
     if should_diff_branch(args):
         import git
