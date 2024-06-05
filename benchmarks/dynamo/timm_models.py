@@ -223,10 +223,6 @@ class TimmRunner(BenchmarkRunner):
             memory_format=torch.channels_last if channels_last else None,
         )
 
-        if device == "xpu":
-            print("---- enable optimize")
-            model = torch.xpu.optimize(model=model, dtype="float16" if self.args.inference else "bfloat16")
-
         self.num_classes = model.num_classes
 
         data_config = resolve_data_config(
@@ -280,6 +276,10 @@ class TimmRunner(BenchmarkRunner):
             model.train()
         else:
             model.eval()
+
+        if device == "xpu":
+            print("---- enable optimize")
+            model = torch.xpu.optimize(model=model, dtype="float16" if self.args.inference else "bfloat16")
 
         self.validate_model(model, example_inputs)
 
