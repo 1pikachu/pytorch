@@ -1735,7 +1735,7 @@ class BenchmarkRunner:
             self.autocast = torch.cpu.amp.autocast
 
     def init_optimizer(self, name, device, params):
-        if device == "cuda" and self.args.training and name not in CI_SKIP_OPTIMIZER:
+        if (device == "cuda" or device == "xpu") and self.args.training and name not in CI_SKIP_OPTIMIZER:
             self.optimizer = torch.optim.SGD(params, lr=0.01, foreach=True)
         else:
             self.optimizer = None
@@ -2314,6 +2314,14 @@ class BenchmarkRunner:
         model = self.deepcopy_and_maybe_ddp(model)
 
         self.init_optimizer(name, current_device, model.parameters())
+        if current_device == "xpu":
+            print("---- enable optimize")
+            if self.args.training:
+                #self.optimizer.train()
+                model, self.optimizer = torch.xpu.optimize(model=model, dtype="float16" if self.args.inference else "bfloat16", optimizer=self.optimizer)
+            else:
+                model = torch.xpu.optimize(model=model, dtype="float16" if self.args.inference else "bfloat16")
+
         with self.pick_grad(name, self.args.training):
             ok, total = Stats.reset_counters()
             experiment_kwargs = {}
@@ -2366,6 +2374,7 @@ class BenchmarkRunner:
             if not hasattr(model, name):
                 model.name = name
             experiment_kwargs["H2D"] = self.H2D
+            print("self.H2D: ", self.H2D)
             results.append(experiment(model, example_inputs, **experiment_kwargs))
             return " ".join(map(str, results))
 
