@@ -75,7 +75,7 @@ function generate_core {
           python benchmarks/dynamo/timm_models.py \
             --performance --amp -d${device} -n${num_iter} \
             --timeout=7200 --only ${model_name} \
-            --backend=inductor \
+            --backend=inductor --dtype ${precision} \
             ${addtion_options} \
             > ${log_file} 2>&1 &  \n" |tee -a ${excute_cmd_file}
         if [ "${numa_nodes_use}" == "0" ];then

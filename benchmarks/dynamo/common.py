@@ -2861,6 +2861,9 @@ def parse_args(args=None):
         action="store_true",
         help="Enable minification when failure is below tolerance. Save repro script for each model.",
     )
+    parser.add_argument(
+        "--dtype", type=str, default="float16"
+    )
 
     group_fuser = parser.add_mutually_exclusive_group()
     # --nvfuser is now the default, keep the option to not break scripts
