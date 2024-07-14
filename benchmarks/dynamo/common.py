@@ -65,6 +65,14 @@ except ImportError:
 
 log = logging.getLogger(__name__)
 
+sys.path.append(os.path.dirname(__file__) + "/../..")
+#print("os.path.dirname(__file__):", os.path.dirname(__file__))
+try:
+    from context_func import context_func
+except ModuleNotFoundError as e:
+    print("!!!pls check how to add context_func.py from launch_benchmark.sh")
+    sys.exit(0)
+
 # We are primarily interested in TF32
 torch.backends.cuda.matmul.allow_tf32 = True
 
@@ -688,7 +696,9 @@ def speedup_experiment(args, model_iter_fn, model, example_inputs, **kwargs):
     tolerance = args.xla_tolerance if args.trace_on_xla else 1e-4
     torch._dynamo.config.repro_tolerance = tolerance
 
-    with maybe_profile(args.export_profiler_trace) as p:
+    #with maybe_profile(args.export_profiler_trace) as p:
+    #with maybe_profile(args.profile) as p:
+    with context_func(args.profile, args.devices[0], fuser_mode='none') as p:
         if args.export_aot_inductor:
             frozen_model_iter_fn = export_aot_inductor(model_iter_fn)
         else:
@@ -707,33 +717,45 @@ def speedup_experiment(args, model_iter_fn, model, example_inputs, **kwargs):
                 maybe_mark_step(args)
 
                 # interleave the runs to handle frequency scaling and load changes
-                with maybe_mark_profile(p=p, mark="expected"):
-                    timings[rep, 0], expected_output = timed(
-                        model,
-                        model_iter_fn,
-                        inputs,
-                        return_result=True,
-                        times=times,
-                        collect_outputs=args.collect_outputs,
-                    )
+                #with maybe_mark_profile(p=p, mark="expected"):
+                timings[rep, 0], expected_output = timed(
+                    model,
+                    model_iter_fn,
+                    inputs,
+                    return_result=True,
+                    times=times,
+                    collect_outputs=args.collect_outputs,
+                )
             else:
                 # call mark_step between the 2 calls to make the comparison fair.
                 maybe_mark_step(args)
 
-                with maybe_mark_profile(p=p, mark="actual"):
-                    timings[rep, 0], actual_output = timed(
-                        model,
-                        frozen_model_iter_fn,
-                        inputs,
-                        return_result=True,
-                        times=times,
-                        collect_outputs=args.collect_outputs,
-                    )
-
-    if args.export_profiler_trace:
-        name = args.profiler_trace_name + "_" + model.name + ".json"
-        name = os.path.join(torch._dynamo.config.base_dir, name)
-        p.export_chrome_trace(name)
+                #with maybe_mark_profile(p=p, mark="actual"):
+                timings[rep, 0], actual_output = timed(
+                    model,
+                    frozen_model_iter_fn,
+                    inputs,
+                    return_result=True,
+                    times=times,
+                    collect_outputs=args.collect_outputs,
+                )
+            if args.profile:
+                p.step()
+    #if args.export_profiler_trace:
+    # if args.profile:
+    #     import pathlib
+    #     timeline_dir = str(pathlib.Path.cwd()) + '/timeline/'
+    #     if not os.path.exists(timeline_dir):
+    #         try:
+    #             os.makedirs(timeline_dir)
+    #         except:
+    #             pass
+    #     name = args.profiler_trace_name + "_" + model.name + ".json"
+    #     name = os.path.join(timeline_dir, name)
+    #     #name = os.path.join(torch._dynamo.config.base_dir, name)
+    #     p.export_chrome_trace(name)
+    #     print("args.devices:", args.devices)
+    #     torch.save(p.key_averages().table(sort_by="self_{}_time_total".format(args.devices[0]), row_limit=100000), timeline_dir+ model.name + '_' + 'profile.pt')
 
     median_duration = np.median(timings, axis=0)[0] + kwargs["H2D"]
     latency = median_duration * 1000
@@ -2504,6 +2526,7 @@ def should_diff_branch(args):
 def parse_args(args=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--compile", action="store_true", help="use for OOB")
+    parser.add_argument("--profile", action="store_true", help="use for getting profile data")
     parser.add_argument(
         "--filter", "-k", action="append", help="filter benchmarks with regexp"
     )
@@ -3370,7 +3393,8 @@ def run(runner, args, original_dir=None):
             output_csv(output_filename, [], [args.only, batch_size])
         return
 
-    if args.export_profiler_trace:
+    #if args.export_profiler_trace:
+    if args.profile:
         if args.profiler_trace_name is None:
             if args.backend:
                 args.profiler_trace_name = args.backend
