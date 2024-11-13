@@ -2336,7 +2336,8 @@ class BenchmarkRunner:
         model = self.deepcopy_and_maybe_ddp(model)
 
         self.init_optimizer(name, current_device, model.parameters())
-        if current_device == "xpu":
+        #if current_device == "xpu":
+        if self.args.ipex:
             print("---- enable optimize")
             if self.args.training:
                 #self.optimizer.train()
@@ -2886,6 +2887,12 @@ def parse_args(args=None):
     )
     parser.add_argument(
         "--dtype", type=str, default="float16"
+    )
+    parser.add_argument(
+        '--ipex', 
+        default=False, 
+        action='store_true', 
+        help="ipex is not enabled now"
     )
 
     group_fuser = parser.add_mutually_exclusive_group()
