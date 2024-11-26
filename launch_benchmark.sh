@@ -12,6 +12,7 @@ function main {
 
     # requirements
     pip uninstall timm -y && pip install timm
+    pip install wandb==0.16.6 protobuf==3.20
 
     # if multiple use 'xxx,xxx,xxx'
     model_name_list=($(echo "${model_name}" |sed 's/,/ /g'))
