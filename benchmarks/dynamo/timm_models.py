@@ -338,7 +338,7 @@ class TimmRunner(BenchmarkRunner):
     def forward_and_backward_pass(self, mod, inputs, collect_outputs=True):
         cloned_inputs = clone_inputs(inputs)
         self.optimizer_zero_grad(mod)
-        with self.autocast():
+        with self.autocast(enabled=True, dtype=self.autocast_dtype, device_type=self.device):
             pred = mod(*cloned_inputs)
             if isinstance(pred, tuple):
                 pred = pred[0]
