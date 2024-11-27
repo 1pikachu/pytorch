@@ -212,6 +212,7 @@ class TimmRunner(BenchmarkRunner):
         is_training = self.args.training
         use_eval_mode = self.args.use_eval_mode
         self.autocast_dtype = torch.float16 if self.args.dtype == "float16" else torch.bfloat16 if self.args.dtype == "bfloat16" else torch.float32
+        self.device = device
 
         # _, model_dtype, data_dtype = self.resolve_precision()
         channels_last = self._args.channels_last
@@ -331,7 +332,7 @@ class TimmRunner(BenchmarkRunner):
         return reduce_to_scalar_loss(pred) / 1000.0
 
     def forward_pass(self, mod, inputs, collect_outputs=True):
-        with self.autocast(dtype=self.autocast_dtype):
+        with self.autocast(enabled=True, dtype=self.autocast_dtype, device_type=self.device):
             return mod(*inputs)
 
     def forward_and_backward_pass(self, mod, inputs, collect_outputs=True):
