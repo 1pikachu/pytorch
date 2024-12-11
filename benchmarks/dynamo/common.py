@@ -2340,6 +2340,13 @@ class BenchmarkRunner:
             else:
                 model = torch.xpu.optimize(model=model, dtype="float16" if self.args.inference else "bfloat16")
 
+        if self.args.channels-last:
+            try:
+                model = model.to(memory_format=torch.channels_last)
+                print("---- Use NHWC model")
+            except:
+                print("---- Use NHWC model failed")
+
         with self.pick_grad(name, self.args.training):
             ok, total = Stats.reset_counters()
             experiment_kwargs = {}
