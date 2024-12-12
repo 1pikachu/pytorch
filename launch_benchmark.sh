@@ -57,7 +57,6 @@ function generate_core {
             OOB_EXEC_HEADER+=" -C $(echo ${device_array[i]} |awk -F ';' '{print $1}') "
         elif [ "${device}" == "cuda" ];then
             OOB_EXEC_HEADER=" CUDA_VISIBLE_DEVICES=${device_array[i]} "
-            addtion_options=" --channels-last "${addtion_options}
         elif [ "${device}" == "xpu" ];then
             OOB_EXEC_HEADER=" ZE_AFFINITY_MASK=${i} "
 	      fi
@@ -79,6 +78,7 @@ function generate_core {
             --performance --amp -d${device} -n${num_iter} \
             --timeout=7200 --only ${model_name} \
             --backend=inductor --dtype ${precision} \
+            --channels_last ${channels_last} \
             ${addtion_options} \
             > ${log_file} 2>&1 &  \n" |tee -a ${excute_cmd_file}
         if [ "${numa_nodes_use}" == "0" ];then

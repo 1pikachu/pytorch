@@ -2340,7 +2340,7 @@ class BenchmarkRunner:
             else:
                 model = torch.xpu.optimize(model=model, dtype="float16" if self.args.inference else "bfloat16")
 
-        if self.args.channels-last:
+        if self.args.channels_last:
             try:
                 model = model.to(memory_format=torch.channels_last)
                 print("---- Use NHWC model")
@@ -2601,9 +2601,9 @@ def parse_args(args=None):
         default=False,
     )
     parser.add_argument(
-        "--channels-last",
-        action="store_true",
-        default=False,
+        "--channels_last",
+        type=int,
+        default=1,
         help="use channels last format",
     )
     parser.add_argument(
